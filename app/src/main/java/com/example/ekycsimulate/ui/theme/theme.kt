@@ -14,19 +14,23 @@ import androidx.core.view.WindowCompat
 // Bảng màu cho Chế độ Tối
 private val DarkColorScheme = darkColorScheme(
     primary = DarkPrimary,
+    secondary = DarkSecondary,
     background = DarkBackground,
     onBackground = DarkOnBackground,
     surface = DarkSurface,
-    onSurface = DarkOnSurface
+    onSurface = DarkOnSurface,
+    onPrimary = DarkOnPrimary
 )
 
 // Bảng màu cho Chế độ Sáng
 private val LightColorScheme = lightColorScheme(
     primary = LightPrimary,
+    secondary = LightSecondary,
     background = LightBackground,
     onBackground = LightOnBackground,
     surface = LightSurface,
-    onSurface = LightOnSurface
+    onSurface = LightOnSurface,
+    onPrimary = LightOnPrimary
 )
 
 @Composable

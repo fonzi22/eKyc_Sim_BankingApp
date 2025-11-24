@@ -1,0 +1,304 @@
+package com.example.ekycsimulate.ui.auth
+
+import android.Manifest
+import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.Matrix
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.camera.core.*
+import androidx.camera.lifecycle.ProcessCameraProvider
+import androidx.camera.view.PreviewView
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.content.ContextCompat
+import com.example.ekycsimulate.zkp.ZKPEnrollmentManager
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import java.util.concurrent.Executors
+
+@Composable
+fun FaceScanScreen(
+    idCardInfo: IdCardInfo,
+    onEnrollmentComplete: (String) -> Unit  // Callback with JSON payload
+) {
+    val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val scope = rememberCoroutineScope()
+    
+    var hasCameraPermission by remember { 
+        mutableStateOf(
+            ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+        ) 
+    }
+    
+    var capturedImage by remember { mutableStateOf<Bitmap?>(null) }
+    var isProcessing by remember { mutableStateOf(false) }
+    var approvalStatus by remember { mutableStateOf(0) } // 0: None, 1: Approved
+    var enrollmentPayload by remember { mutableStateOf<String?>(null) }
+    var zkpDetails by remember { mutableStateOf<Map<String, String>?>(null) }
+    
+    val cameraPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        hasCameraPermission = isGranted
+    }
+
+    LaunchedEffect(Unit) {
+        if (!hasCameraPermission) {
+            cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+        }
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp)
+            .verticalScroll(rememberScrollState()),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Text("Xác thực khuôn mặt", style = MaterialTheme.typography.headlineMedium)
+        Spacer(modifier = Modifier.height(16.dp))
+
+        when {
+            !hasCameraPermission -> {
+                Text("Cần quyền truy cập Camera để tiếp tục")
+                Button(onClick = { cameraPermissionLauncher.launch(Manifest.permission.CAMERA) }) {
+                    Text("Cấp quyền Camera")
+                }
+            }
+            
+            capturedImage == null -> {
+                // Camera Preview
+                Text("Đặt khuôn mặt vào khung hình", style = MaterialTheme.typography.bodyMedium)
+                Spacer(modifier = Modifier.height(8.dp))
+                
+                CameraPreview(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(400.dp),
+                    onImageCaptured = { bitmap ->
+                        capturedImage = bitmap
+                        // Start processing
+                        isProcessing = true
+                        scope.launch {
+                            // Simulate liveness detection (check if real photo, not from gallery)
+                            delay(1500)
+                            // In production: check image metadata, detect screen reflection, etc.
+                            approvalStatus = 1 // Approved
+                            isProcessing = false
+                        }
+                    }
+                )
+            }
+            
+            isProcessing -> {
+                CircularProgressIndicator()
+                Spacer(modifier = Modifier.height(16.dp))
+                Text("Đang xác thực liveness...")
+            }
+            
+            approvalStatus == 1 && enrollmentPayload == null -> {
+                Text("✅ Xác thực thành công!", color = Color(0xFF4CAF50), fontWeight = FontWeight.Bold)
+                Text("Approval Status: 1", style = MaterialTheme.typography.bodySmall)
+                Spacer(modifier = Modifier.height(16.dp))
+                
+                Text("Đang tạo Zero-Knowledge Proof...", style = MaterialTheme.typography.bodyMedium)
+                
+                LaunchedEffect(Unit) {
+                    delay(1000)
+                    
+                    // Generate ZKP enrollment (binds OCR data + approval)
+                    val enrollmentManager = ZKPEnrollmentManager(context)
+                    val enrollmentData = enrollmentManager.performEnrollment(
+                        idCardInfo = idCardInfo,
+                        fullName = idCardInfo.fullName,
+                        phoneNumber = "", // You can add input fields for these
+                        address = idCardInfo.address,
+                        faceImageApproval = approvalStatus
+                    )
+                    
+                    val payload = enrollmentManager.enrollmentPayloadToJson(enrollmentData.payload)
+                    enrollmentPayload = payload
+                    
+                    // Extract details for display
+                    zkpDetails = mapOf(
+                        "Public Key" to enrollmentData.payload.publicKey.take(40) + "...",
+                        "Commitment" to enrollmentData.payload.commitment,
+                        "ID Hash" to enrollmentData.payload.idNumberHash,
+                        "Proof R" to enrollmentData.payload.proof.commitmentR.take(40) + "...",
+                        "Proof Challenge" to enrollmentData.payload.proof.challenge.take(40) + "...",
+                        "Proof Response" to enrollmentData.payload.proof.response.take(40) + "..."
+                    )
+                }
+                
+                CircularProgressIndicator(modifier = Modifier.size(24.dp))
+            }
+            
+            enrollmentPayload != null -> {
+                Text("✅ ZKP Enrollment Complete!", color = Color(0xFF4CAF50), fontWeight = FontWeight.Bold)
+                Spacer(modifier = Modifier.height(16.dp))
+                
+                // Display ZKP Details
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Text("ZKP Evidence (Schnorr Protocol):", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                        HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+                        
+                        zkpDetails?.forEach { (key, value) ->
+                            Text(key, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                            SelectionContainer {
+                                Text(value, style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace, fontSize = 9.sp)
+                            }
+                            Spacer(modifier = Modifier.height(8.dp))
+                        }
+                    }
+                }
+                
+                Spacer(modifier = Modifier.height(16.dp))
+                
+                // Show payload preview
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Text("Server Payload (Ready to Send):", style = MaterialTheme.typography.titleSmall)
+                        HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+                        SelectionContainer {
+                            Text(
+                                enrollmentPayload!!.take(200) + "\n...",
+                                style = MaterialTheme.typography.bodySmall,
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = 8.sp
+                            )
+                        }
+                    }
+                }
+                
+                Spacer(modifier = Modifier.height(24.dp))
+                
+                Button(
+                    onClick = { onEnrollmentComplete(enrollmentPayload!!) },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Hoàn tất & Gửi lên Server")
+                }
+                
+                OutlinedButton(
+                    onClick = { 
+                        capturedImage = null
+                        approvalStatus = 0
+                        enrollmentPayload = null
+                        zkpDetails = null
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Chụp lại")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun CameraPreview(
+    modifier: Modifier = Modifier,
+    onImageCaptured: (Bitmap) -> Unit
+) {
+    val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val cameraProviderFuture = remember { ProcessCameraProvider.getInstance(context) }
+    val previewView = remember { PreviewView(context) }
+    var imageCapture: ImageCapture? by remember { mutableStateOf(null) }
+
+    LaunchedEffect(cameraProviderFuture) {
+        val cameraProvider = cameraProviderFuture.get()
+        
+        val preview = Preview.Builder().build().also {
+            it.setSurfaceProvider(previewView.surfaceProvider)
+        }
+        
+        imageCapture = ImageCapture.Builder()
+            .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
+            .build()
+        
+        val cameraSelector = CameraSelector.DEFAULT_FRONT_CAMERA
+        
+        try {
+            cameraProvider.unbindAll()
+            cameraProvider.bindToLifecycle(
+                lifecycleOwner,
+                cameraSelector,
+                preview,
+                imageCapture
+            )
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
+    Column(modifier = modifier) {
+        AndroidView(
+            factory = { previewView },
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f)
+        )
+        
+        Spacer(modifier = Modifier.height(16.dp))
+        
+        Button(
+            onClick = {
+                val executor = Executors.newSingleThreadExecutor()
+                imageCapture?.takePicture(
+                    executor,
+                    object : ImageCapture.OnImageCapturedCallback() {
+                        override fun onCaptureSuccess(image: ImageProxy) {
+                            val bitmap = image.toBitmap()
+                            val rotatedBitmap = rotateBitmap(bitmap, image.imageInfo.rotationDegrees.toFloat())
+                            onImageCaptured(rotatedBitmap)
+                            image.close()
+                        }
+                        
+                        override fun onError(exception: ImageCaptureException) {
+                            exception.printStackTrace()
+                        }
+                    }
+                )
+            },
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text("Chụp ảnh")
+        }
+    }
+}
+
+private fun ImageProxy.toBitmap(): Bitmap {
+    val buffer = planes[0].buffer
+    val bytes = ByteArray(buffer.remaining())
+    buffer.get(bytes)
+    return android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+}
+
+private fun rotateBitmap(bitmap: Bitmap, degrees: Float): Bitmap {
+    val matrix = Matrix().apply { postRotate(degrees) }
+    return Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+}

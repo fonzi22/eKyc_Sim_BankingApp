@@ -15,6 +15,7 @@ import com.example.ekycsimulate.ui.auth.LandingScreen
 import com.example.ekycsimulate.ui.theme.EkycSimulateTheme
 // Sửa lại đường dẫn import cho đúng
 import com.example.ekycsimulate.ui.viewmodel.EkycViewModel
+import com.example.ekycsimulate.ui.auth.FaceScanScreen
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -33,6 +34,7 @@ object AppRoutes {
     const val LANDING = "landing"
     const val EKYC_CAMERA = "ekyc_camera"
     const val CONFIRM_INFO = "confirm_info"
+    const val FACE_SCAN = "face_scan"
 }
 
 @Composable
@@ -83,11 +85,10 @@ fun AppNavigation() {
                     croppedBitmap = bitmap,
                     onNextStep = { idCardInfo ->
                         Log.d("EKYC_Flow", "Xác nhận thông tin thành công: $idCardInfo")
-                        // TODO: Điều hướng đến bước tiếp theo (chụp ảnh khuôn mặt)
-
-                        // Tạm thời quay lại màn hình chính và dọn dẹp ViewModel
-                        ekycViewModel.croppedImage = null // Giải phóng bộ nhớ
-                        navController.popBackStack(AppRoutes.LANDING, inclusive = false)
+                        // Lưu thông tin vào ViewModel để dùng ở bước sau
+                        ekycViewModel.idCardInfo = idCardInfo
+                        // Điều hướng đến bước Face Scan
+                        navController.navigate(AppRoutes.FACE_SCAN)
                     },
                     onRetake = {
                         ekycViewModel.croppedImage = null
@@ -98,6 +99,31 @@ fun AppNavigation() {
                 // Xử lý trường hợp người dùng vào màn hình này mà không có ảnh (ví dụ: do process death).
                 // An toàn nhất là quay lại màn hình trước đó.
                 Log.e("AppNavigation", "Bitmap bị null, quay lại màn hình trước.")
+                navController.popBackStack()
+            }
+        }
+
+        // 4. Định nghĩa màn hình Face Scan
+        composable(route = AppRoutes.FACE_SCAN) {
+            val idInfo = ekycViewModel.idCardInfo
+            if (idInfo != null) {
+                FaceScanScreen(
+                    idCardInfo = idInfo,
+                    onEnrollmentComplete = { jsonPayload ->
+                        // Payload is ready to send to server
+                        Log.d("EKYC_ZKP", "Enrollment Payload:\n$jsonPayload")
+                        
+                        // TODO: Send to server API
+                        // Example: apiService.enrollUser(jsonPayload)
+                        
+                        // For now, just complete the flow
+                        ekycViewModel.croppedImage = null
+                        ekycViewModel.idCardInfo = null
+                        navController.popBackStack(AppRoutes.LANDING, inclusive = false)
+                    }
+                )
+            } else {
+                // Missing info, go back
                 navController.popBackStack()
             }
         }
