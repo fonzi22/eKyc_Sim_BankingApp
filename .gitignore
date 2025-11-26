@@ -102,3 +102,6 @@ read_pdf.py
 # OS-specific
 .DS_Store
 Thumbs.db
+
+venv
+.agent
