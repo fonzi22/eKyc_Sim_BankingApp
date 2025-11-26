@@ -284,6 +284,8 @@ class ZKPEnrollmentManager(private val context: Context) {
      * Send enrollment payload to server
      */
     suspend fun sendEnrollment(payload: SchnorrZKP.EnrollmentPayload): Result<com.example.ekycsimulate.data.EnrollmentResponse> {
+        val jsonPayload = enrollmentPayloadToJson(payload)
+        android.util.Log.d("ZKP_PAYLOAD", "Client Sending Payload: $jsonPayload")
         return com.example.ekycsimulate.data.ApiService.enroll(payload)
     }
     /**

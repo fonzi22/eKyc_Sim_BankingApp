@@ -84,6 +84,15 @@ def enroll(payload: EnrollmentPayload, db: Session = Depends(get_db)):
     if not zkp.verify_proof(payload.publicKey, proof_dict, message):
         raise HTTPException(status_code=400, detail="Invalid ZKP Proof")
         
+    # Log received payload
+    print(f"--- [SERVER] Received Enrollment Payload ---")
+    print(f"Public Key: {payload.publicKey}")
+    print(f"Commitment: {payload.commitment}")
+    print(f"ID Hash: {payload.idNumberHash}")
+    print(f"Encrypted PII: {payload.encryptedPII}")
+    print(f"Proof: {proof_dict}")
+    print(f"------------------------------------------")
+
     # 4. Save to DB
     new_user = models.User(
         public_key=payload.publicKey,
@@ -92,6 +101,12 @@ def enroll(payload: EnrollmentPayload, db: Session = Depends(get_db)):
         encrypted_pii=payload.encryptedPII,
         enrollment_proof=proof_dict
     )
+    
+    print(f"--- [SERVER] Storing User to DB ---")
+    print(f"User ID Hash: {new_user.id_hash}")
+    print(f"User Public Key: {new_user.public_key}")
+    print(f"-----------------------------------")
+
     db.add(new_user)
     db.commit()
     db.refresh(new_user)

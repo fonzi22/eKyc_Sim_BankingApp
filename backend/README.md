@@ -38,10 +38,10 @@ This document provides step-by-step instructions on how to set up, run, and depl
 
 5.  **Run the server (Development Mode):**
     ```bash
-    uvicorn main:app --reload --host 0.0.0.0 --port 8000
+    uvicorn main:app --reload --port 8001
     ```
-    - The server will be available at `http://localhost:8000`.
-    - Swagger UI documentation: `http://localhost:8000/docs`.
+    - The server will be available at `http://localhost:8001`.
+    - Swagger UI documentation: `http://localhost:8001/docs`.
 
 ---
 
@@ -62,7 +62,7 @@ For production, we recommend using **Docker** to containerize the application an
 
     COPY . .
 
-    CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+    CMD ["uvicorn", "main:app", "--port", "8001"]
     ```
 
 2.  **Build the Docker image:**
@@ -72,7 +72,7 @@ For production, we recommend using **Docker** to containerize the application an
 
 3.  **Run the container:**
     ```bash
-    docker run -d -p 8000:8000 --name ekyc-server ekyc-backend
+    docker run -d -p 8001:8001 --name ekyc-server ekyc-backend
     ```
 
 ### Option B: Manual Linux Deployment (Ubuntu/CentOS)
@@ -98,7 +98,7 @@ For production, we recommend using **Docker** to containerize the application an
     Group=www-data
     WorkingDirectory=/var/www/ekyc-backend
     Environment="PATH=/var/www/ekyc-backend/venv/bin"
-    ExecStart=/var/www/ekyc-backend/venv/bin/uvicorn main:app --workers 4 --host 0.0.0.0 --port 8000
+    ExecStart=/var/www/ekyc-backend/venv/bin/uvicorn main:app --workers 4 --port 8001
 
     [Install]
     WantedBy=multi-user.target
@@ -113,7 +113,7 @@ For production, we recommend using **Docker** to containerize the application an
         server_name api.yourdomain.com;
 
         location / {
-            proxy_pass http://127.0.0.1:8000;
+            proxy_pass http://127.0.0.1:8001;
             proxy_set_header Host $host;
             proxy_set_header X-Real-IP $remote_addr;
         }
