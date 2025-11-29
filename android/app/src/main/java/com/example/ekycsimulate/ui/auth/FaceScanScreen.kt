@@ -4,10 +4,19 @@ import android.Manifest
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Matrix
+import android.content.ContentValues
+import android.content.Context
+import android.media.MediaMetadataRetriever
+import android.net.Uri
+import android.provider.MediaStore
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.camera.core.*
+import androidx.camera.core.CameraSelector
+import androidx.camera.core.ImageCapture
+import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
+import androidx.camera.video.*
+import androidx.camera.video.VideoCapture
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -15,6 +24,8 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.ekycsimulate.ui.viewmodel.EkycViewModel
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -29,16 +40,19 @@ import androidx.core.content.ContextCompat
 import com.example.ekycsimulate.zkp.ZKPEnrollmentManager
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.util.concurrent.Executors
 
 @Composable
 fun FaceScanScreen(
     idCardInfo: IdCardInfo,
+    croppedImage: Bitmap?, // Passed from shared ViewModel
     onEnrollmentComplete: (String) -> Unit  // Callback with JSON payload
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val scope = rememberCoroutineScope()
+    // val ekycViewModel: EkycViewModel = viewModel() // Removed: Use passed parameter
     
     var hasCameraPermission by remember { 
         mutableStateOf(
@@ -48,17 +62,34 @@ fun FaceScanScreen(
     
     var capturedImage by remember { mutableStateOf<Bitmap?>(null) }
     var isProcessing by remember { mutableStateOf(false) }
+    var isRecording by remember { mutableStateOf(false) }
+
+    var videoUri by remember { mutableStateOf<Uri?>(null) }
+    var recording by remember { mutableStateOf<Recording?>(null) }
+    var videoCapture by remember { mutableStateOf<VideoCapture<Recorder>?>(null) }
+
+    var randomDigits by remember { mutableStateOf(generateRandomDigits()) }
     var approvalStatus by remember { mutableStateOf(0) } // 0: None, 1: Approved
     var enrollmentPayload by remember { mutableStateOf<String?>(null) }
     var enrollmentDataObj by remember { mutableStateOf<ZKPEnrollmentManager.EnrollmentData?>(null) }
     var zkpDetails by remember { mutableStateOf<Map<String, String>?>(null) }
     var isSending by remember { mutableStateOf(false) }
     var sendError by remember { mutableStateOf<String?>(null) }
+    var inferenceResult by remember { mutableStateOf<com.example.ekycsimulate.model.EkycResult?>(null) }
+    val modelManager = remember { com.example.ekycsimulate.model.EkycModelManager(context) }
+    var debugLog by remember { mutableStateOf("Sẵn sàng. Nhấn 'Bắt đầu quay' để test.") }
     
     val cameraPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { isGranted ->
         hasCameraPermission = isGranted
+    }
+
+    // Toggle this for testing on Emulator vs Real Device
+    val useFakeDetector = false 
+    val faceDetector = remember { 
+        if (useFakeDetector) com.example.ekycsimulate.data.FakeFaceDetector() 
+        else com.example.ekycsimulate.data.MLKitFaceDetector() 
     }
 
     LaunchedEffect(Unit) {
@@ -99,13 +130,6 @@ fun FaceScanScreen(
                         // Start processing
                         isProcessing = true
                         scope.launch {
-                            // Modular Face Detection
-                            // USE THIS FOR EMULATOR TESTING:
-                            val faceDetector: com.example.ekycsimulate.domain.FaceDetector = com.example.ekycsimulate.data.FakeFaceDetector()
-                            
-                            // USE THIS FOR REAL DEVICE:
-                            // val faceDetector: com.example.ekycsimulate.domain.FaceDetector = com.example.ekycsimulate.data.MLKitFaceDetector()
-                            
                             val results = faceDetector.detect(bitmap)
                             
                             if (results.isNotEmpty()) {
@@ -126,8 +150,185 @@ fun FaceScanScreen(
                             }
                             isProcessing = false
                         }
+                    },
+                    onVideoCaptureReady = { vc ->
+                        videoCapture = vc
                     }
                 )
+                
+                Spacer(modifier = Modifier.height(16.dp))
+                
+                // Random Digits Display (Large and Clear)
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text("Vui lòng đọc to dãy số sau:", style = MaterialTheme.typography.labelLarge)
+                        Text(
+                            text = randomDigits,
+                            style = MaterialTheme.typography.displayMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer,
+                            letterSpacing = 4.sp
+                        )
+                    }
+                }
+                
+                Spacer(modifier = Modifier.height(16.dp))
+                
+                Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Button(
+                        onClick = {
+                            if (videoCapture == null) {
+                                debugLog = "LỖI: Camera chưa sẵn sàng (VideoCapture null)\n$debugLog"
+                                return@Button
+                            }
+                            
+                            val name = "ekyc_rec_${System.currentTimeMillis()}.mp4"
+                            val contentValues = ContentValues().apply {
+                                put(MediaStore.MediaColumns.DISPLAY_NAME, name)
+                                put(MediaStore.MediaColumns.MIME_TYPE, "video/mp4")
+                                if (android.os.Build.VERSION.SDK_INT > android.os.Build.VERSION_CODES.P) {
+                                    put(MediaStore.Video.Media.RELATIVE_PATH, "Movies/EkycSim")
+                                }
+                            }
+                            val mediaStoreOutputOptions = MediaStoreOutputOptions
+                                .Builder(context.contentResolver, MediaStore.Video.Media.EXTERNAL_CONTENT_URI)
+                                .setContentValues(contentValues)
+                                .build()
+                            
+                            try {
+                                val activeRecording = videoCapture!!.output
+                                    .prepareRecording(context, mediaStoreOutputOptions)
+                                    .apply {
+                                        // if (ActivityCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                                        //     withAudioEnabled()
+                                        // }
+                                    }
+                                    .start(ContextCompat.getMainExecutor(context)) { recordEvent ->
+                                        when(recordEvent) {
+                                            is VideoRecordEvent.Start -> {
+                                                isRecording = true
+                                                debugLog = "Đang quay video... (Đọc dãy số trên)\n"
+                                            }
+                                            is VideoRecordEvent.Finalize -> {
+                                                isRecording = false
+                                                if (!recordEvent.hasError()) {
+                                                    val uri = recordEvent.outputResults.outputUri
+                                                    videoUri = uri
+                                                    debugLog = "Video đã lưu tại: $uri\nĐang trích xuất frames...\n$debugLog"
+                                                    
+                                                    // Process video
+                                                    scope.launch {
+                                                        isProcessing = true
+                                                        try {
+                                                            // Move heavy work to IO thread
+                                                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                                                // Small delay to ensure file is ready
+                                                                delay(500)
+                                                                
+                                                                // Extract 32 frames as requested
+                                                                val frames = extractFramesFromVideo(context, uri, 32)
+                                                                
+                                                                withContext(kotlinx.coroutines.Dispatchers.Main) {
+                                                                    debugLog = "Đã trích xuất ${frames.size} frames. Đang chạy model...\n$debugLog"
+                                                                }
+                                                                
+                                                                if (frames.isEmpty()) {
+                                                                    withContext(kotlinx.coroutines.Dispatchers.Main) {
+                                                                        sendError = "Không thể trích xuất frames từ video"
+                                                                        debugLog = "LỖI: Không trích xuất được frames nào.\n$debugLog"
+                                                                    }
+                                                                    return@withContext
+                                                                }
+                                                                
+                                                                // Prefer ID card bitmap passed from shared ViewModel, fallback to capturedImage if needed
+                                                                val idBmp = croppedImage ?: capturedImage
+                                                                if (idBmp == null) {
+                                                                    withContext(kotlinx.coroutines.Dispatchers.Main) {
+                                                                        sendError = "Không có ảnh CCCD để ghép với video"
+                                                                        debugLog = "LỖI: Thiếu ảnh CCCD đầu vào (croppedImage is null).\n$debugLog"
+                                                                    }
+                                                                    return@withContext
+                                                                }
+                                                                
+                                                                val result = modelManager.runInference(frames, idBmp)
+                                                                
+                                                                withContext(kotlinx.coroutines.Dispatchers.Main) {
+                                                                    result.onSuccess { res ->
+                                                                        inferenceResult = res
+                                                                        
+                                                                        // Thresholds for success
+                                                                        val isLive = res.livenessProb > 0.5
+                                                                        val isMatch = res.verificationScore > 0.5
+                                                                        
+                                                                        if (isLive && isMatch) {
+                                                                            approvalStatus = 1 // Trigger ZKP flow
+                                                                            sendError = null
+                                                                            debugLog = "XÁC THỰC THÀNH CÔNG!\nLiveness: ${res.livenessProb}\nVerif: ${res.verificationScore}\n$debugLog"
+                                                                        } else {
+                                                                            approvalStatus = 0
+                                                                            sendError = "Xác thực thất bại: Liveness=${res.livenessProb}, Match=${res.verificationScore}"
+                                                                            debugLog = "THẤT BẠI:\nLiveness: ${res.livenessProb}\nVerif: ${res.verificationScore}\n$debugLog"
+                                                                        }
+                                                                        randomDigits = generateRandomDigits()
+                                                                    }.onFailure { e ->
+                                                                        sendError = "Model failed: ${e.message}"
+                                                                        debugLog = "LỖI: Model failed: ${e.message}\n$debugLog"
+                                                                    }
+                                                                }
+                                                            }
+                                                        } catch (e: Exception) {
+                                                            withContext(kotlinx.coroutines.Dispatchers.Main) {
+                                                                sendError = e.message
+                                                                debugLog = "LỖI Xử lý: ${e.message}\n$debugLog"
+                                                            }
+                                                        } finally {
+                                                            isProcessing = false
+                                                        }
+                                                    }
+                                                } else {
+                                                    recording?.close()
+                                                    recording = null
+                                                    debugLog = "LỖI Quay video: ${recordEvent.error}\n$debugLog"
+                                                }
+                                            }
+                                        }
+                                    }
+                                recording = activeRecording
+                            } catch (e: Exception) {
+                                debugLog = "LỖI Khởi tạo quay: ${e.message}\n$debugLog"
+                            }
+                        },
+                        modifier = Modifier.weight(1f),
+                        enabled = !isRecording && !isProcessing,
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                    ) {
+                        Text("Bắt đầu quay")
+                    }
+                    
+                    Spacer(modifier = Modifier.width(16.dp))
+                    
+                    Button(
+                        onClick = {
+                            recording?.stop()
+                            recording = null
+                        },
+                        modifier = Modifier.weight(1f),
+                        enabled = isRecording,
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                    ) {
+                        Text("Dừng quay")
+                    }
+                }
+                inferenceResult?.let { res ->
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text("Kết quả: Liveness=${res.livenessProb}, Quality=${res.quality}, Verif=${res.verificationScore}", style = MaterialTheme.typography.bodyMedium)
+                }
             }
             
             isProcessing -> {
@@ -184,9 +385,7 @@ fun FaceScanScreen(
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
                 ) {
                     Column(modifier = Modifier.padding(16.dp)) {
-                        Text("ZKP Evidence (Schnorr Protocol):", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                         HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
-                        
                         zkpDetails?.forEach { (key, value) ->
                             Text(key, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
                             SelectionContainer {
@@ -261,11 +460,56 @@ fun FaceScanScreen(
                         approvalStatus = 0
                         enrollmentPayload = null
                         zkpDetails = null
+                        videoUri = null
+                        debugLog = "Sẵn sàng."
                     },
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Text("Chụp lại")
                 }
+                Spacer(modifier = Modifier.height(16.dp))
+                // Run model on frames
+                Button(onClick = {
+                    if (videoUri == null) { sendError = "Chưa có video"; return@Button }
+                    isProcessing = true
+                    scope.launch {
+                        val frames32 = extractFramesFromVideo(context, videoUri!!, 32)
+                        val idBmp = croppedImage ?: capturedImage ?: return@launch
+                        val result = modelManager.runInference(frames32, idBmp)
+                        isProcessing = false
+                        result.onSuccess { res ->
+                            inferenceResult = res
+                            sendError = "Liveness: ${res.livenessProb}, Quality: ${res.quality}, Verif: ${res.verificationScore}"
+                            debugLog = "KẾT QUẢ:\nLiveness: ${res.livenessProb}\nQuality: ${res.quality}\nVerif: ${res.verificationScore}\n$debugLog"
+                            randomDigits = generateRandomDigits()
+                        }.onFailure { e ->
+                            sendError = "Chạy mô hình thất bại: ${e.message}"
+                        }
+                    }
+                }, modifier = Modifier.fillMaxWidth()) {
+                    Text("Chạy lại mô hình với video cũ")
+                }
+            }
+        }
+        
+        Spacer(modifier = Modifier.height(16.dp))
+        Text("Debug Logs (Cuộn để xem):", style = MaterialTheme.typography.labelMedium, color = Color.Gray)
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(120.dp),
+            colors = CardDefaults.cardColors(containerColor = Color.LightGray.copy(alpha = 0.3f))
+        ) {
+            SelectionContainer {
+                Text(
+                    text = debugLog,
+                    modifier = Modifier
+                        .padding(8.dp)
+                        .verticalScroll(rememberScrollState()),
+                    style = MaterialTheme.typography.bodySmall,
+                    fontSize = 10.sp,
+                    fontFamily = FontFamily.Monospace
+                )
             }
         }
     }
@@ -274,7 +518,8 @@ fun FaceScanScreen(
 @Composable
 fun CameraPreview(
     modifier: Modifier = Modifier,
-    onImageCaptured: (Bitmap) -> Unit
+    onImageCaptured: (Bitmap) -> Unit,
+    onVideoCaptureReady: (VideoCapture<Recorder>) -> Unit
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -292,6 +537,12 @@ fun CameraPreview(
         imageCapture = ImageCapture.Builder()
             .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
             .build()
+            
+        val recorder = Recorder.Builder()
+            .setQualitySelector(QualitySelector.from(Quality.SD)) // Use SD for faster processing
+            .build()
+        val videoCapture = VideoCapture.withOutput(recorder)
+        onVideoCaptureReady(videoCapture)
         
         val cameraSelector = CameraSelector.DEFAULT_FRONT_CAMERA
         
@@ -301,7 +552,8 @@ fun CameraPreview(
                 lifecycleOwner,
                 cameraSelector,
                 preview,
-                imageCapture
+                imageCapture,
+                videoCapture
             )
         } catch (e: Exception) {
             e.printStackTrace()
@@ -317,41 +569,66 @@ fun CameraPreview(
         )
         
         Spacer(modifier = Modifier.height(16.dp))
-        
-        Button(
-            onClick = {
-                val executor = Executors.newSingleThreadExecutor()
-                imageCapture?.takePicture(
-                    executor,
-                    object : ImageCapture.OnImageCapturedCallback() {
-                        override fun onCaptureSuccess(image: ImageProxy) {
-                            val bitmap = image.toBitmap()
-                            val rotatedBitmap = rotateBitmap(bitmap, image.imageInfo.rotationDegrees.toFloat())
-                            onImageCaptured(rotatedBitmap)
-                            image.close()
-                        }
-                        
-                        override fun onError(exception: ImageCaptureException) {
-                            exception.printStackTrace()
-                        }
-                    }
-                )
-            },
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Text("Chụp ảnh")
-        }
     }
 }
 
-private fun ImageProxy.toBitmap(): Bitmap {
-    val buffer = planes[0].buffer
-    val bytes = ByteArray(buffer.remaining())
-    buffer.get(bytes)
-    return android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+private fun extractFramesFromVideo(context: Context, videoUri: Uri, targetFrameCount: Int): List<Bitmap> {
+    val retriever = MediaMetadataRetriever()
+    try {
+        retriever.setDataSource(context, videoUri)
+        val durationStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+        val durationMs = durationStr?.toLongOrNull() ?: 0L
+        
+        if (durationMs == 0L) return emptyList()
+        
+        val frames = mutableListOf<Bitmap>()
+        val step = durationMs / targetFrameCount
+        
+        for (i in 0 until targetFrameCount) {
+            val timeUs = (i * step) * 1000L
+            // OPTION_CLOSEST_SYNC ensures we get a frame near that time, though exact precision varies
+            val bitmap = retriever.getFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+            if (bitmap != null) {
+                // Resize to 224x224 here to save memory
+                val resized = Bitmap.createScaledBitmap(bitmap, 224, 224, true)
+                frames.add(resized)
+                if (bitmap != resized) bitmap.recycle()
+            }
+        }
+        return frames
+    } catch (e: Exception) {
+        e.printStackTrace()
+        return emptyList()
+    } finally {
+        retriever.release()
+    }
 }
 
-private fun rotateBitmap(bitmap: Bitmap, degrees: Float): Bitmap {
-    val matrix = Matrix().apply { postRotate(degrees) }
-    return Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+
+
+private fun generateRandomDigits(): String {
+    val rnd = java.util.Random()
+    val sb = StringBuilder()
+    repeat(5) { sb.append(rnd.nextInt(10)) }
+    return sb.toString()
+}
+
+private fun sampleOrPadFrames(frames: List<Bitmap>, count: Int): List<Bitmap> {
+    if (frames.size == count) return frames
+    if (frames.isEmpty()) return List(count) { Bitmap.createBitmap(224, 224, Bitmap.Config.ARGB_8888) }
+    if (frames.size > count) {
+        // Uniformly sample 'count' frames
+        val step = frames.size.toDouble() / count
+        val out = mutableListOf<Bitmap>()
+        var idx = 0.0
+        repeat(count) {
+            out.add(frames[(idx).toInt()])
+            idx += step
+        }
+        return out
+    }
+    // frames.size < count -> pad by repeating last frame
+    val out = frames.toMutableList()
+    while (out.size < count) out.add(frames.last())
+    return out
 }
