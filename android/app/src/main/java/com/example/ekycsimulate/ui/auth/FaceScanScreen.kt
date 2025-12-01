@@ -47,7 +47,8 @@ import java.util.concurrent.Executors
 fun FaceScanScreen(
     idCardInfo: IdCardInfo,
     croppedImage: Bitmap?, // Passed from shared ViewModel
-    onEnrollmentComplete: (String) -> Unit  // Callback with JSON payload
+    onEnrollmentComplete: (String) -> Unit,  // Callback with JSON payload
+    onBack: () -> Unit // Callback for Cancel button
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -79,8 +80,8 @@ fun FaceScanScreen(
     val modelManager = remember { com.example.ekycsimulate.model.EkycModelManager(context) }
 
     
-    // SIMULATION MODE: Change this to TRUE/FALSE to test Success/Failure scenarios
-    val isSimulateSuccess = true
+    // SIMULATION MODE: Disabled for real AI usage
+    val isSimulateSuccess = false
     
     val cameraPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -116,6 +117,68 @@ fun FaceScanScreen(
                 Text("Cần quyền truy cập Camera để tiếp tục")
                 Button(onClick = { cameraPermissionLauncher.launch(Manifest.permission.CAMERA) }) {
                     Text("Cấp quyền Camera")
+                }
+            }
+            
+            // FAILURE STATE: Show Error and Retry/Cancel options
+            sendError != null -> {
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Icon(
+                            imageVector = androidx.compose.material.icons.Icons.Default.Warning,
+                            contentDescription = "Error",
+                            tint = MaterialTheme.colorScheme.error
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = "Xác thực thất bại",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = MaterialTheme.colorScheme.onErrorContainer
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = sendError ?: "Lỗi không xác định",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onErrorContainer
+                        )
+                    }
+                }
+                
+                Spacer(modifier = Modifier.height(24.dp))
+                
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceEvenly
+                ) {
+                    OutlinedButton(
+                        onClick = onBack,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("Hủy bỏ")
+                    }
+                    
+                    Spacer(modifier = Modifier.width(16.dp))
+                    
+                    Button(
+                        onClick = {
+                            // Retry Logic
+                            sendError = null
+                            approvalStatus = 0
+                            capturedImage = null
+                            videoUri = null
+                            isProcessing = false
+                            randomDigits = generateRandomDigits()
+                        },
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("Thử lại")
+                    }
                 }
             }
 
@@ -397,21 +460,25 @@ fun FaceScanScreen(
                                                                     return@withContext
                                                                 }
                                                                 
-                                                                // SIMULATION MODE: Bypass Model
-                                                                // Using isSimulateSuccess defined at top of screen
-                                                                
-                                                                // Simulate processing delay
-                                                                delay(5000)
+                                                                // REAL AI INFERENCE
+                                                                val result = modelManager.runInference(frames, idBmp)
 
                                                                 withContext(kotlinx.coroutines.Dispatchers.Main) {
-                                                                    if (isSimulateSuccess) {
-                                                                        approvalStatus = 1 // Trigger ZKP flow
-                                                                        sendError = null
-                                                                        // debugLog removed as requested
-                                                                    } else {
+                                                                    result.onSuccess { ekycResult ->
+                                                                        if (ekycResult.isPassed()) {
+                                                                             approvalStatus = 1
+                                                                             sendError = null
+                                                                             inferenceResult = ekycResult
+                                                                        } else {
+                                                                             approvalStatus = 0
+                                                                             // Format float to 2 decimal places
+                                                                             val live = String.format("%.2f", ekycResult.livenessProb)
+                                                                             val match = String.format("%.2f", ekycResult.matchingScore)
+                                                                             sendError = "Thất bại: Thật($live) - Khớp($match)"
+                                                                        }
+                                                                    }.onFailure { e ->
                                                                         approvalStatus = 0
-                                                                        sendError = "SIMULATION: Xác thực thất bại"
-                                                                        // debugLog removed as requested
+                                                                        sendError = "Lỗi AI: ${e.message}"
                                                                     }
                                                                     randomDigits = generateRandomDigits()
                                                                 }
